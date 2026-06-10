@@ -1,0 +1,495 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="1.0.0"
+
+die()  { echo "error: $*" >&2; exit 1; }
+info() { echo "==> $*"; }
+warn() { echo "warning: $*" >&2; }
+
+get_config_dir() {
+  echo "${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+}
+
+get_state_dir() {
+  echo "${XDG_CONFIG_HOME:-$HOME/.config}/opencode-sync"
+}
+
+get_state_file() {
+  echo "$(get_state_dir)/state"
+}
+
+abs_path() {
+  local path="$1"
+  if [[ -e "$path" ]]; then
+    if [[ -d "$path" ]]; then
+      (cd "$path" && pwd -P)
+    else
+      (cd "$(dirname "$path")" && echo "$(pwd -P)/$(basename "$path")")
+    fi
+  else
+    die "path not found: $path"
+  fi
+}
+
+resolve_link_target() {
+  local link="$1" target
+  target="$(readlink "$link")"
+  if [[ "$target" != /* ]]; then
+    target="$(cd "$(dirname "$link")" && pwd)/$target"
+  fi
+  if [[ -e "$target" ]]; then
+    abs_path "$target"
+  else
+    echo "$target"
+  fi
+}
+
+read_state_var() {
+  local key="$1" file="$2" line k v
+  [[ -f "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == *"="* ]] || continue
+    k="${line%%=*}"
+    v="${line#*=}"
+    [[ "$k" == "$key" ]] || continue
+    if [[ "$v" == \'*\' ]]; then
+      v="${v:1:${#v}-2}"
+      v="${v//\\\'/\'}"
+    fi
+    printf '%s' "$v"
+    return 0
+  done <"$file"
+  return 1
+}
+
+clear_state() {
+  rm -f "$(get_state_file)"
+}
+
+run_editor() {
+  local file="$1"
+  local -a cmd
+  if [[ -z "${EDITOR:-}" ]]; then
+    vi "$file"
+    return
+  fi
+  read -r -a cmd <<<"$EDITOR"
+  cmd+=("$file")
+  "${cmd[@]}"
+}
+
+is_git_repo() {
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+try_resolve_repo() {
+  local repo config state
+  config="$(get_config_dir)"
+  if [[ -L "$config" ]]; then
+    repo="$(resolve_link_target "$config")"
+    if [[ -d "$repo" ]]; then
+      echo "$(abs_path "$repo")"
+      return 0
+    fi
+  fi
+  state="$(get_state_file)"
+  if repo="$(read_state_var REPO_PATH "$state")"; then
+    if [[ -n "$repo" && -d "$repo" ]]; then
+      echo "$(abs_path "$repo")"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+resolve_repo() {
+  try_resolve_repo || die "no linked repo found; run: opencode-sync init"
+}
+
+write_state() {
+  local repo="$1" escaped
+  escaped="${repo//\'/\'\\\'\'}"
+  mkdir -p "$(get_state_dir)"
+  cat >"$(get_state_file)" <<EOF
+REPO_PATH='${escaped}'
+LINKED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+EOF
+}
+
+default_gitignore() {
+  cat <<'EOF'
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / local overrides
+.env
+.env.*
+*.local.json
+*.local.jsonc
+
+# Plugin build artifacts
+plugins/node_modules/
+EOF
+}
+
+write_default_gitignore() {
+  local repo="$1"
+  local file="$repo/.gitignore"
+  if [[ -f "$file" ]]; then
+    return 0
+  fi
+  default_gitignore >"$file"
+}
+
+confirm_gitignore() {
+  local repo="$1"
+  local file="$repo/.gitignore"
+  while true; do
+    echo
+    echo "--- .gitignore ---"
+    cat "$file"
+    echo "--- end ---"
+    echo
+    read -r -p "Does this look correct? [Y/n/e] " ans
+    ans="${ans:-Y}"
+    case "$(echo "$ans" | tr '[:upper:]' '[:lower:]')" in
+      y|yes) return 0 ;;
+      n|no)  die "aborted" ;;
+      e|edit)
+        run_editor "$file"
+        ;;
+      *) warn "enter Y, n, or e" ;;
+    esac
+  done
+}
+
+copy_config_tree() {
+  local src="$1" dst="$2" item name
+  mkdir -p "$dst"
+  for item in "$src"/* "$src"/.[!.]* "$src"/..?*; do
+    [[ -e "$item" ]] || continue
+    name="${item##*/}"
+    [[ "$name" == node_modules || "$name" == .git ]] && continue
+    if [[ -d "$item" && ! -L "$item" ]]; then
+      copy_config_tree "$item" "$dst/$name"
+    elif [[ -L "$item" ]]; then
+      cp -P "$item" "$dst/$name"
+    else
+      cp -p "$item" "$dst/$name"
+    fi
+  done
+}
+
+backup_config_dir() {
+  local config="$1"
+  local bak="${config}.bak"
+  if [[ -e "$bak" ]]; then
+    die "$bak already exists; move or remove it first"
+  fi
+  mv "$config" "$bak"
+  info "backed up existing config to $bak"
+}
+
+config_dir_is_populated() {
+  local config="$1"
+  [[ -d "$config" && -n "$(ls -A "$config" 2>/dev/null)" ]]
+}
+
+do_link() {
+  local repo="$1"
+  local config
+  repo="$(abs_path "$repo")"
+  is_git_repo "$repo" || die "not a git repository: $repo"
+  config="$(get_config_dir)"
+
+  if [[ -L "$config" ]]; then
+    local target
+    target="$(resolve_link_target "$config")"
+    if [[ -d "$target" && "$(abs_path "$target")" == "$repo" ]]; then
+      info "already linked to $repo"
+      write_state "$repo"
+      return 0
+    fi
+    die "$config is linked elsewhere ($target); run: opencode-sync unlink"
+  fi
+
+  if [[ -d "$config" && ! -L "$config" ]]; then
+    if config_dir_is_populated "$config"; then
+      die "$config exists and is not empty; back it up or remove it before linking"
+    fi
+    rmdir "$config" 2>/dev/null || die "$config exists and is not empty"
+  fi
+
+  mkdir -p "$(dirname "$config")"
+  ln -sfn "$repo" "$config"
+  write_state "$repo"
+  info "linked $config -> $repo"
+}
+
+do_unlink() {
+  local config repo
+  config="$(get_config_dir)"
+  if [[ ! -L "$config" ]]; then
+    die "$config is not a symlink"
+  fi
+  repo="$(resolve_link_target "$config")"
+  rm "$config"
+  clear_state
+  info "removed link $config -> $repo"
+  info "repo unchanged at $repo"
+}
+
+git_commit_if_dirty() {
+  local repo="$1"
+  git -C "$repo" add -A
+  if git -C "$repo" diff --cached --quiet; then
+    return 0
+  fi
+  local msg="opencode-sync: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  git -C "$repo" commit -m "$msg"
+}
+
+remote_has_branch() {
+  local repo="$1" remote="$2" branch="$3"
+  git -C "$repo" ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1
+}
+
+do_sync() {
+  local repo branch remote
+  repo="$(resolve_repo)"
+  info "syncing $repo"
+  git_commit_if_dirty "$repo"
+  if ! git -C "$repo" remote | grep -q .; then
+    warn "no remote configured; committed locally only"
+    info "sync complete"
+    return 0
+  fi
+  branch="$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+  if git -C "$repo" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
+    git -C "$repo" pull
+    git -C "$repo" push
+  else
+    remote="$(git -C "$repo" remote | head -1)"
+    if remote_has_branch "$repo" "$remote" "$branch"; then
+      git -C "$repo" pull "$remote" "$branch"
+    elif [[ "$branch" != main ]] && remote_has_branch "$repo" "$remote" main; then
+      git -C "$repo" pull "$remote" main
+    else
+      info "remote has no $branch branch yet; skipping pull"
+    fi
+    git -C "$repo" push -u "$remote" "$branch"
+  fi
+  info "sync complete"
+}
+
+cmd_status() {
+  local config repo
+  config="$(get_config_dir)"
+  echo "config dir: $config"
+  if [[ -L "$config" ]]; then
+    echo "link:       $(resolve_link_target "$config")"
+  elif [[ -d "$config" ]]; then
+    echo "link:       (not linked — regular directory)"
+  else
+    echo "link:       (missing)"
+  fi
+  if repo="$(try_resolve_repo)"; then
+    echo "repo:       $repo"
+    echo
+    git -C "$repo" status -sb
+    echo
+    git -C "$repo" remote -v 2>/dev/null || true
+  else
+    echo "repo:       (not found)"
+  fi
+}
+
+expand_home() {
+  local path="$1"
+  case "$path" in
+    "~") echo "$HOME" ;;
+    "~/"*) echo "$HOME/${path:2}" ;;
+    *) echo "$path" ;;
+  esac
+}
+
+prompt_repo_path() {
+  local default="$1" path dir base
+  read -r -p "Repo path [$default]: " path
+  path="$(expand_home "${path:-$default}")"
+  if [[ -e "$path" ]]; then
+    abs_path "$path"
+    return
+  fi
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  mkdir -p "$dir"
+  echo "$(cd "$dir" && pwd)/$base"
+}
+
+prompt_remote() {
+  local url
+  read -r -p "Remote URL: " url
+  [[ -n "$url" ]] || die "remote URL is required"
+  echo "$url"
+}
+
+init_new_repo() {
+  local config repo remote
+  config="$(get_config_dir)"
+  repo="$(prompt_repo_path "$HOME/opencode-config")"
+
+  if [[ -e "$repo" ]]; then
+    [[ -d "$repo" && -z "$(ls -A "$repo" 2>/dev/null)" ]] || die "$repo already exists"
+  else
+    mkdir -p "$repo"
+  fi
+
+  if [[ -L "$config" ]]; then
+    die "$config is already linked; unlink first"
+  fi
+
+  if [[ -d "$config" && ! -L "$config" ]]; then
+    if config_dir_is_populated "$config"; then
+      info "copying $config -> $repo"
+      copy_config_tree "$config" "$repo"
+      backup_config_dir "$config"
+    fi
+  fi
+
+  if ! is_git_repo "$repo"; then
+    git -C "$repo" init -b main 2>/dev/null || git -C "$repo" init
+    git -C "$repo" checkout -b main 2>/dev/null || true
+  fi
+
+  write_default_gitignore "$repo"
+  confirm_gitignore "$repo"
+
+  git -C "$repo" add -A
+  if git -C "$repo" diff --cached --quiet; then
+    warn "nothing to commit; creating empty initial commit"
+    git -C "$repo" commit --allow-empty -m "Initial opencode config"
+  else
+    git -C "$repo" commit -m "Initial opencode config"
+  fi
+
+  remote="$(prompt_remote)"
+  if git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+    git -C "$repo" remote set-url origin "$remote"
+  else
+    git -C "$repo" remote add origin "$remote"
+  fi
+
+  local branch
+  branch="$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+  git -C "$repo" push -u origin "$branch"
+
+  do_link "$repo"
+  info "init complete"
+}
+
+init_clone_repo() {
+  local config repo remote branch
+  config="$(get_config_dir)"
+  remote="$(prompt_remote)"
+  repo="$(prompt_repo_path "$HOME/opencode-config")"
+
+  [[ ! -e "$repo" ]] || die "$repo already exists"
+
+  if [[ -L "$config" ]]; then
+    die "$config is already linked; unlink first"
+  fi
+
+  if [[ -d "$config" && ! -L "$config" ]] && config_dir_is_populated "$config"; then
+    echo "Existing config found at $config"
+    read -r -p "Back up to ${config}.bak and continue? [Y/n] " ans
+    ans="${ans:-Y}"
+    case "$(echo "$ans" | tr '[:upper:]' '[:lower:]')" in
+      y|yes) backup_config_dir "$config" ;;
+      *) die "aborted" ;;
+    esac
+  fi
+
+  git clone "$remote" "$repo"
+
+  if [[ ! -f "$repo/.gitignore" ]]; then
+    read -r -p "No .gitignore found. Add defaults? [Y/n] " ans
+    ans="${ans:-Y}"
+    case "$(echo "$ans" | tr '[:upper:]' '[:lower:]')" in
+      y|yes)
+        write_default_gitignore "$repo"
+        confirm_gitignore "$repo"
+        git -C "$repo" add .gitignore
+        git -C "$repo" commit -m "Add default .gitignore"
+        branch="$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+        git -C "$repo" push origin "$branch" || warn "could not push .gitignore commit"
+        ;;
+      *)
+        warn "continuing without .gitignore — be careful not to commit secrets"
+        ;;
+    esac
+  fi
+
+  do_link "$repo"
+  info "init complete"
+}
+
+cmd_init() {
+  echo "OpenCode config sync — setup"
+  echo
+  echo "  1) Create a new repo from my existing config (first machine)"
+  echo "  2) Clone an existing repo (another machine)"
+  echo
+  read -r -p "Choose [1/2]: " choice
+  case "$choice" in
+    1) init_new_repo ;;
+    2) init_clone_repo ;;
+    *) die "invalid choice" ;;
+  esac
+}
+
+cmd_link() {
+  [[ $# -eq 1 ]] || die "usage: opencode-sync link <repo>"
+  do_link "$1"
+}
+
+usage() {
+  cat <<EOF
+opencode-sync $VERSION — sync OpenCode config via git
+
+Usage:
+  opencode-sync init              Interactive setup (new repo or clone)
+  opencode-sync link <repo>       Link ~/.config/opencode to a git repo
+  opencode-sync sync              Commit, pull, then push
+  opencode-sync status            Show link and git status
+  opencode-sync unlink            Remove symlink (repo is kept)
+  opencode-sync version           Show version
+
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    init)    cmd_init "$@" ;;
+    link)    cmd_link "$@" ;;
+    sync)    do_sync ;;
+    status)  cmd_status ;;
+    unlink)  do_unlink ;;
+    version|--version|-V) echo "opencode-sync $VERSION" ;;
+    help|--help|-h|"") usage ;;
+    *) die "unknown command: $cmd (try: opencode-sync help)" ;;
+  esac
+}
+
+main "$@"
