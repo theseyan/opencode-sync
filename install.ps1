@@ -11,9 +11,6 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$localPs1 = Join-Path $scriptRoot "opencode-sync.ps1"
-$localCmd = Join-Path $scriptRoot "opencode-sync.cmd"
 $destPs1 = Join-Path $InstallDir "opencode-sync.ps1"
 $destCmd = Join-Path $InstallDir "opencode-sync.cmd"
 
@@ -26,7 +23,16 @@ if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-if (Test-Path $localPs1) {
+$scriptPath = $MyInvocation.MyCommand.Path
+$useLocal = $false
+if ($scriptPath) {
+    $scriptRoot = Split-Path -Parent $scriptPath
+    $localPs1 = Join-Path $scriptRoot "opencode-sync.ps1"
+    $localCmd = Join-Path $scriptRoot "opencode-sync.cmd"
+    $useLocal = Test-Path $localPs1
+}
+
+if ($useLocal) {
     Copy-Item -Path $localPs1 -Destination $destPs1 -Force
     if (Test-Path $localCmd) {
         Copy-Item -Path $localCmd -Destination $destCmd -Force
