@@ -303,7 +303,7 @@ function Invoke-Status {
     if (Test-IsLink $config) {
         Write-Host "link:       $(Resolve-LinkTarget $config)"
     } elseif (Test-Path $config) {
-        Write-Host "link:       (not linked — regular directory)"
+        Write-Host "link:       (not linked - regular directory)"
     } else {
         Write-Host "link:       (missing)"
     }
@@ -433,7 +433,7 @@ function Invoke-InitCloneRepo {
                 git -C $repo push origin $branch
                 if ($LASTEXITCODE -ne 0) { Write-Warn "could not push .gitignore commit" }
             }
-            default { Write-Warn "continuing without .gitignore — be careful not to commit secrets" }
+            default { Write-Warn "continuing without .gitignore - be careful not to commit secrets" }
         }
     }
 
@@ -442,7 +442,7 @@ function Invoke-InitCloneRepo {
 }
 
 function Invoke-Init {
-    Write-Host "OpenCode config sync — setup"
+    Write-Host "OpenCode config sync - setup"
     Write-Host ""
     Write-Host "  1) Create a new repo from my existing config (first machine)"
     Write-Host "  2) Clone an existing repo (another machine)"
@@ -457,7 +457,7 @@ function Invoke-Init {
 
 function Show-Usage {
     @"
-opencode-sync $VERSION — sync OpenCode config via git
+opencode-sync $VERSION - sync OpenCode config via git
 
 Usage:
   opencode-sync init              Interactive setup (new repo or clone)

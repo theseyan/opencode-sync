@@ -298,7 +298,7 @@ cmd_status() {
   if [[ -L "$config" ]]; then
     echo "link:       $(resolve_link_target "$config")"
   elif [[ -d "$config" ]]; then
-    echo "link:       (not linked — regular directory)"
+    echo "link:       (not linked - regular directory)"
   else
     echo "link:       (missing)"
   fi
@@ -434,7 +434,7 @@ init_clone_repo() {
         git -C "$repo" push origin "$branch" || warn "could not push .gitignore commit"
         ;;
       *)
-        warn "continuing without .gitignore — be careful not to commit secrets"
+        warn "continuing without .gitignore - be careful not to commit secrets"
         ;;
     esac
   fi
@@ -444,7 +444,7 @@ init_clone_repo() {
 }
 
 cmd_init() {
-  echo "OpenCode config sync — setup"
+  echo "OpenCode config sync - setup"
   echo
   echo "  1) Create a new repo from my existing config (first machine)"
   echo "  2) Clone an existing repo (another machine)"
@@ -464,7 +464,7 @@ cmd_link() {
 
 usage() {
   cat <<EOF
-opencode-sync $VERSION — sync OpenCode config via git
+opencode-sync $VERSION - sync OpenCode config via git
 
 Usage:
   opencode-sync init              Interactive setup (new repo or clone)

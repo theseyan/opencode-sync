@@ -1,10 +1,58 @@
 #Requires -Version 5.1
+param(
+    [switch]$NoPathUpdate
+)
+
 $ErrorActionPreference = "Stop"
 
 $Repo = "theseyan/opencode-sync"
 $Branch = if ($env:BRANCH) { $env:BRANCH } else { "main" }
 $Base = "https://raw.githubusercontent.com/$Repo/$Branch"
-$InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "bin" }
+$InstallDir = if ($env:INSTALL_DIR) {
+    $env:INSTALL_DIR
+} else {
+    Join-Path $env:USERPROFILE ".opencode-sync\bin"
+}
+
+function Publish-Env {
+    if (-not ("Win32.NativeMethods" -as [Type])) {
+        Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @"
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(
+    IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+"@
+    }
+    $result = [UIntPtr]::Zero
+    [Win32.NativeMethods]::SendMessageTimeout(
+        [IntPtr]0xffff, 0x1a, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result
+    ) | Out-Null
+}
+
+function Get-UserPath {
+    $key = Get-Item -Path 'HKCU:\Environment'
+    $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+}
+
+function Add-UserPathEntry([string]$Dir) {
+    $path = Get-UserPath
+    $parts = @()
+    if ($path) { $parts = $path -split ';' | Where-Object { $_ } }
+    if ($parts -contains $Dir) { return $false }
+    $parts += $Dir
+    Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value ($parts -join ';')
+    Publish-Env
+    $env:PATH = ($env:PATH.TrimEnd(';') + ';' + $Dir)
+    return $true
+}
+
+function Save-RemoteFile([string]$Url, [string]$OutFile) {
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        & curl.exe -#SfLo $OutFile $Url
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $OutFile)) { return }
+    }
+    Invoke-RestMethod -Uri $Url -OutFile $OutFile
+}
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Error "git is required"
@@ -19,9 +67,7 @@ $cmdContent = @"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0opencode-sync.ps1" %*
 "@
 
-if (-not (Test-Path $InstallDir)) {
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-}
+New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
 $scriptPath = $MyInvocation.MyCommand.Path
 $useLocal = $false
@@ -40,15 +86,20 @@ if ($useLocal) {
         Set-Content -Path $destCmd -Value $cmdContent -Encoding ASCII
     }
 } else {
-    Invoke-WebRequest -Uri "$Base/opencode-sync.ps1" -OutFile $destPs1
-    Invoke-WebRequest -Uri "$Base/opencode-sync.cmd" -OutFile $destCmd
+    Save-RemoteFile "$Base/opencode-sync.ps1" $destPs1
+    Save-RemoteFile "$Base/opencode-sync.cmd" $destCmd
 }
 
-$pathEntries = $env:PATH -split ';'
-if ($InstallDir -notin $pathEntries) {
-    Write-Host "note: add $InstallDir to your user PATH (Settings > System > About > Advanced system settings > Environment Variables),"
-    Write-Host "      or run: [Environment]::SetEnvironmentVariable('PATH', `"$env:PATH;$InstallDir`", 'User')"
+$pathAdded = $false
+if (-not $NoPathUpdate) {
+    $pathAdded = Add-UserPathEntry $InstallDir
+} else {
+    Write-Host "skipped adding $InstallDir to PATH"
 }
 
 Write-Host "installed opencode-sync to $InstallDir"
-Write-Host "run: opencode-sync init"
+if ($pathAdded) {
+    Write-Host "added to user PATH - open a new terminal, then run: opencode-sync init"
+} else {
+    Write-Host "run: opencode-sync init"
+}

@@ -11,16 +11,16 @@ OpenCode reads global config from `~/.config/opencode` (or `%USERPROFILE%\.confi
 
 ## Install
 
-macOS/Linux (installs to `~/.local/bin`):
+macOS/Linux (installs to `~/.opencode-sync/bin` and adds it to your shell PATH):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/theseyan/opencode-sync/main/install.sh | bash
 ```
 
-Windows (installs to `%LOCALAPPDATA%\bin`):
+Windows (installs to `%USERPROFILE%\.opencode-sync\bin` and adds it to your user PATH):
 
 ```powershell
-irm https://raw.githubusercontent.com/theseyan/opencode-sync/main/install.ps1 | iex
+powershell -c "irm https://raw.githubusercontent.com/theseyan/opencode-sync/main/install.ps1 | iex"
 ```
 
 Custom install path:
@@ -30,8 +30,10 @@ INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/theseyan
 ```
 
 ```powershell
-$env:INSTALL_DIR = "C:\Tools\bin"; irm https://raw.githubusercontent.com/theseyan/opencode-sync/main/install.ps1 | iex
+$env:INSTALL_DIR = "C:\Tools\bin"; powershell -c "irm https://raw.githubusercontent.com/theseyan/opencode-sync/main/install.ps1 | iex"
 ```
+
+Skip PATH update: `NO_PATH_UPDATE=1 curl -fsSL .../install.sh | bash` or `.\install.ps1 -NoPathUpdate`
 
 Or clone the repo and run `./install.sh` / `.\install.ps1` if you'd rather read the scripts first.
 
