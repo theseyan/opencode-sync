@@ -68,6 +68,8 @@ add_path_to_file() {
   return 0
 }
 
+REFRESH_CMD=""
+
 setup_path() {
   local refresh="" configured=false
 
@@ -85,6 +87,7 @@ setup_path() {
         refresh="source $(tildify "$fish_config")"
       elif [[ -w "$fish_config" ]]; then
         configured=true
+        refresh="source $(tildify "$fish_config")"
       fi
       ;;
     zsh)
@@ -114,12 +117,11 @@ setup_path() {
   if ! $configured; then
     info "add to your shell rc file:"
     info "  $path_line"
+    REFRESH_CMD=""
     return
   fi
 
-  if [[ -n "$refresh" ]]; then
-    info "then run: $refresh"
-  fi
+  REFRESH_CMD="$refresh"
 }
 
 info "installed opencode-sync to $(tildify "$INSTALL_DIR/opencode-sync")"
@@ -132,8 +134,18 @@ fi
 if [[ -n "$NO_PATH_UPDATE" ]]; then
   info "add to PATH:"
   info "  $path_line"
-else
-  setup_path
+  info "then run: opencode-sync init"
+  exit 0
 fi
 
-info "run: opencode-sync init"
+setup_path
+
+if [[ -n "${REFRESH_CMD:-}" ]]; then
+  info "open a new terminal, or run:"
+  info "  $REFRESH_CMD"
+elif [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  info "add to PATH:"
+  info "  $path_line"
+fi
+
+info "then run: opencode-sync init"
